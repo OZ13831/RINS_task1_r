@@ -1,0 +1,17 @@
+/home/gamma/colcon_ws/install/dis_tutorial4/lib/dis_tutorial4/map_goals.py
+/home/gamma/colcon_ws/install/dis_tutorial4/lib/dis_tutorial4/transform_point.py
+/home/gamma/colcon_ws/install/dis_tutorial4/share/ament_index/resource_index/package_run_dependencies/dis_tutorial4
+/home/gamma/colcon_ws/install/dis_tutorial4/share/ament_index/resource_index/parent_prefix_path/dis_tutorial4
+/home/gamma/colcon_ws/install/dis_tutorial4/share/dis_tutorial4/environment/ament_prefix_path.sh
+/home/gamma/colcon_ws/install/dis_tutorial4/share/dis_tutorial4/environment/ament_prefix_path.dsv
+/home/gamma/colcon_ws/install/dis_tutorial4/share/dis_tutorial4/environment/path.sh
+/home/gamma/colcon_ws/install/dis_tutorial4/share/dis_tutorial4/environment/path.dsv
+/home/gamma/colcon_ws/install/dis_tutorial4/share/dis_tutorial4/local_setup.bash
+/home/gamma/colcon_ws/install/dis_tutorial4/share/dis_tutorial4/local_setup.sh
+/home/gamma/colcon_ws/install/dis_tutorial4/share/dis_tutorial4/local_setup.zsh
+/home/gamma/colcon_ws/install/dis_tutorial4/share/dis_tutorial4/local_setup.dsv
+/home/gamma/colcon_ws/install/dis_tutorial4/share/dis_tutorial4/package.dsv
+/home/gamma/colcon_ws/install/dis_tutorial4/share/ament_index/resource_index/packages/dis_tutorial4
+/home/gamma/colcon_ws/install/dis_tutorial4/share/dis_tutorial4/cmake/dis_tutorial4Config.cmake
+/home/gamma/colcon_ws/install/dis_tutorial4/share/dis_tutorial4/cmake/dis_tutorial4Config-version.cmake
+/home/gamma/colcon_ws/install/dis_tutorial4/share/dis_tutorial4/package.xml

@@ -1,0 +1,9 @@
+/home/gamma/colcon_ws/build/dis_tutorial4/CMakeFiles/uninstall.dir
+/home/gamma/colcon_ws/build/dis_tutorial4/CMakeFiles/dis_tutorial4_uninstall.dir
+/home/gamma/colcon_ws/build/dis_tutorial4/CMakeFiles/test.dir
+/home/gamma/colcon_ws/build/dis_tutorial4/CMakeFiles/edit_cache.dir
+/home/gamma/colcon_ws/build/dis_tutorial4/CMakeFiles/rebuild_cache.dir
+/home/gamma/colcon_ws/build/dis_tutorial4/CMakeFiles/list_install_components.dir
+/home/gamma/colcon_ws/build/dis_tutorial4/CMakeFiles/install.dir
+/home/gamma/colcon_ws/build/dis_tutorial4/CMakeFiles/install/local.dir
+/home/gamma/colcon_ws/build/dis_tutorial4/CMakeFiles/install/strip.dir
