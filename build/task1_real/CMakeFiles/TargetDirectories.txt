@@ -1,0 +1,9 @@
+/home/gamma/colcon_ws/build/task1_real/CMakeFiles/uninstall.dir
+/home/gamma/colcon_ws/build/task1_real/CMakeFiles/task1_real_uninstall.dir
+/home/gamma/colcon_ws/build/task1_real/CMakeFiles/test.dir
+/home/gamma/colcon_ws/build/task1_real/CMakeFiles/edit_cache.dir
+/home/gamma/colcon_ws/build/task1_real/CMakeFiles/rebuild_cache.dir
+/home/gamma/colcon_ws/build/task1_real/CMakeFiles/list_install_components.dir
+/home/gamma/colcon_ws/build/task1_real/CMakeFiles/install.dir
+/home/gamma/colcon_ws/build/task1_real/CMakeFiles/install/local.dir
+/home/gamma/colcon_ws/build/task1_real/CMakeFiles/install/strip.dir
