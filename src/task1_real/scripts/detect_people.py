@@ -16,6 +16,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 
 from cv_bridge import CvBridge, CvBridgeError
 import cv2
+import numpy as np
 
 
 class detect_faces(Node):
@@ -27,8 +28,9 @@ class detect_faces(Node):
 			namespace='',
 			parameters=[
 				('device', ''),
+				('depth_topic', '/gemini/depth/image_raw'),
+				('camera_info_topic', '/gemini/color/camera_info'),
 				('target_frame', 'map'),
-				('assumed_face_width_m', 0.16),
 				('inference_scale', 0.5),
 				('show_image', True),
 				('top_crop_ratio', 0.3),
@@ -40,8 +42,9 @@ class detect_faces(Node):
 
 		self.detection_color = (0, 0, 255)
 		self.device = self.get_parameter('device').get_parameter_value().string_value
+		self.depth_topic = self.get_parameter('depth_topic').get_parameter_value().string_value
+		self.camera_info_topic = self.get_parameter('camera_info_topic').get_parameter_value().string_value
 		self.target_frame = self.get_parameter('target_frame').get_parameter_value().string_value
-		self.assumed_face_width_m = self.get_parameter('assumed_face_width_m').get_parameter_value().double_value
 		self.inference_scale = self.get_parameter('inference_scale').get_parameter_value().double_value
 		self.show_image = self.get_parameter('show_image').get_parameter_value().bool_value
 		self.top_crop_ratio = self.get_parameter('top_crop_ratio').get_parameter_value().double_value
@@ -52,6 +55,10 @@ class detect_faces(Node):
 
 		self.bridge = CvBridge()
 
+		self.latest_depth_msg = None
+		self.latest_depth_image = None
+		self.depth_y_start = 0
+		self.depth_y_end = 0
 		self.fx = None
 		self.fy = None
 		self.cx = None
@@ -62,14 +69,17 @@ class detect_faces(Node):
 		self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
 		self.rgb_image_sub = self.create_subscription(Image, "/gemini/color/image_raw", self.rgb_callback, qos_profile_sensor_data)
-		self.camera_info_sub = self.create_subscription(CameraInfo, "/gemini/color/camera_info", self.camera_info_callback, qos_profile_sensor_data)
+		self.depth_sub = self.create_subscription(Image, self.depth_topic, self.depth_callback, qos_profile_sensor_data)
+		self.camera_info_sub = self.create_subscription(CameraInfo, self.camera_info_topic, self.camera_info_callback, qos_profile_sensor_data)
 
 		self.marker_pub = self.create_publisher(MarkerArray, marker_topic, QoSReliabilityPolicy.BEST_EFFORT)
 
 		self.faces = []
 		self.processing = False
 
-		self.get_logger().info(f"Node has been initialized! Will publish face markers to {marker_topic} in frame {self.target_frame}.")
+		self.get_logger().info(
+			f"Node has been initialized! Will publish face markers to {marker_topic} in frame {self.target_frame} using depth topic {self.depth_topic}."
+		)
 
 	def camera_info_callback(self, data):
 		if len(data.k) < 9:
@@ -80,6 +90,111 @@ class detect_faces(Node):
 		self.cx = float(data.k[2])
 		self.cy = float(data.k[5])
 		self.camera_frame_id = data.header.frame_id
+
+	def depth_callback(self, data):
+		try:
+			depth_image = self.bridge.imgmsg_to_cv2(data, desired_encoding="passthrough")
+		except Exception as exc:
+			self.get_logger().warn(f"Failed to parse depth image: {exc}")
+			return
+
+		if depth_image is None or depth_image.size == 0:
+			self.latest_depth_msg = None
+			self.latest_depth_image = None
+			self.depth_y_start = 0
+			self.depth_y_end = 0
+			return
+
+		depth_height = depth_image.shape[0]
+		top_crop_px = int(depth_height * self.top_crop_ratio)
+		bottom_crop_px = int(depth_height * self.bottom_crop_ratio)
+		y_start = top_crop_px
+		y_end = max(y_start + 1, depth_height - bottom_crop_px)
+		cropped_depth = depth_image[y_start:y_end, :]
+		if cropped_depth.size == 0:
+			self.latest_depth_msg = None
+			self.latest_depth_image = None
+			self.depth_y_start = 0
+			self.depth_y_end = 0
+			return
+
+		self.latest_depth_msg = data
+		self.latest_depth_image = cropped_depth
+		self.depth_y_start = y_start
+		self.depth_y_end = y_end
+
+	def _depth_to_meters(self, depth_value, encoding):
+		if depth_value is None:
+			return None
+
+		value = float(depth_value)
+		if not np.isfinite(value) or value <= 0.0:
+			return None
+
+		if encoding == "16UC1":
+			return value / 1000.0
+
+		return value
+
+	def _read_depth_at_pixel(self, image_x, image_y, image_width, image_height):
+		if self.latest_depth_msg is None or self.latest_depth_image is None:
+			return None
+		if self.depth_y_end <= self.depth_y_start:
+			return None
+
+		depth_height, depth_width = self.latest_depth_image.shape[:2]
+		if image_width <= 1 or image_height <= 1 or depth_width <= 1 or depth_height <= 1:
+			return None
+
+		color_top_crop_px = int(image_height * self.top_crop_ratio)
+		color_bottom_crop_px = int(image_height * self.bottom_crop_ratio)
+		color_y_start = color_top_crop_px
+		color_y_end = max(color_y_start + 1, image_height - color_bottom_crop_px)
+		if image_y < color_y_start or image_y >= color_y_end:
+			return None
+
+		depth_x = int(round((float(image_x) / float(image_width - 1)) * float(depth_width - 1)))
+		color_crop_height = max(1, color_y_end - color_y_start)
+		relative_y = float(image_y - color_y_start) / float(max(1, color_crop_height - 1))
+		depth_y = int(round(relative_y * float(depth_height - 1)))
+		depth_x = max(0, min(depth_x, depth_width - 1))
+		depth_y = max(0, min(depth_y, depth_height - 1))
+
+		encoding = self.latest_depth_msg.encoding
+		depth_m = self._depth_to_meters(self.latest_depth_image[depth_y, depth_x], encoding)
+		if depth_m is None:
+			window = 2
+			x_start = max(0, depth_x - window)
+			x_end = min(depth_width, depth_x + window + 1)
+			y_start = max(0, depth_y - window)
+			y_end = min(depth_height, depth_y + window + 1)
+			patch = self.latest_depth_image[y_start:y_end, x_start:x_end]
+			patch_flat = patch.reshape(-1)
+			depth_m = None
+			for value in patch_flat:
+				depth_m_candidate = self._depth_to_meters(value, encoding)
+				if depth_m_candidate is not None:
+					depth_m = depth_m_candidate
+					break
+			if depth_m is None:
+				return None
+
+		depth_y_full = self.depth_y_start + depth_y
+		return float(depth_x), float(depth_y_full), float(depth_m)
+
+	def _project_pixel_to_camera(self, image_x, image_y, image_width, image_height):
+		if self.fx is None or self.fy is None or self.cx is None or self.cy is None:
+			return None
+
+		depth_sample = self._read_depth_at_pixel(image_x, image_y, image_width, image_height)
+		if depth_sample is None:
+			return None
+
+		depth_x, depth_y, depth_m = depth_sample
+		x_cam = ((depth_x - self.cx) * depth_m) / self.fx
+		y_cam = ((depth_y - self.cy) * depth_m) / self.fy
+		z_cam = depth_m
+		return float(x_cam), float(y_cam), float(z_cam)
 
 	def rgb_callback(self, data):
 		if self.processing:
@@ -93,7 +208,12 @@ class detect_faces(Node):
 		clear_marker = Marker()
 		clear_marker.action = Marker.DELETEALL
 		marker_array.markers.append(clear_marker)
-		
+
+		if self.latest_depth_msg is None or self.latest_depth_image is None:
+			self.marker_pub.publish(marker_array)
+			self.processing = False
+			return
+
 		cv_image = self.bridge.imgmsg_to_cv2(data, "bgr8")
 		height, width = cv_image.shape[:2]
 
@@ -111,28 +231,30 @@ class detect_faces(Node):
 			scaled_image = cv2.resize(cropped_image, (0, 0), fx=self.inference_scale, fy=self.inference_scale)
 			res = RetinaFace.detect_faces(scaled_image)
 
-			camera_frame = self.camera_frame_id if self.camera_frame_id is not None else data.header.frame_id
+			depth_msg = self.latest_depth_msg
+			camera_frame = self.camera_frame_id if self.camera_frame_id else data.header.frame_id
+			if depth_msg is not None and depth_msg.header.frame_id:
+				camera_frame = depth_msg.header.frame_id
 			transform = None
-			if self.fx is not None and self.fy is not None and self.cx is not None and self.cy is not None:
+			try:
+				transform = self.tf_buffer.lookup_transform(
+					self.target_frame,
+					camera_frame,
+					data.header.stamp,
+					timeout=Duration(seconds=0.01)
+				)
+			except TransformException:
 				try:
 					transform = self.tf_buffer.lookup_transform(
 						self.target_frame,
 						camera_frame,
-						data.header.stamp,
+						Time(),
 						timeout=Duration(seconds=0.01)
 					)
-				except TransformException:
-					try:
-						transform = self.tf_buffer.lookup_transform(
-							self.target_frame,
-							camera_frame,
-							Time(),
-							timeout=Duration(seconds=0.01)
-						)
-					except TransformException as fallback_ex:
-						self.get_logger().warn(
-							f"Could not lookup transform {camera_frame} -> {self.target_frame}: {fallback_ex}"
-						)
+				except TransformException as fallback_ex:
+					self.get_logger().warn(
+						f"Could not lookup transform {camera_frame} -> {self.target_frame}: {fallback_ex}"
+					)
 
 			if isinstance(res, dict):
 				for marker_id, face_data in enumerate(res.values()):
@@ -158,20 +280,19 @@ class detect_faces(Node):
 
 					self.faces.append((cx, cy))
 
-					if self.fx is None or self.fy is None or self.cx is None or self.cy is None or transform is None:
+					if transform is None:
 						continue
 
-					bbox_width_px = max(1.0, float(x2 - x1))
-					z_cam = (self.assumed_face_width_m * self.fx) / bbox_width_px
-					x_cam = ((float(cx) - self.cx) * z_cam) / self.fx
-					y_cam = ((float(cy) - self.cy) * z_cam) / self.fy
+					point_cam = self._project_pixel_to_camera(cx, cy, width, height)
+					if point_cam is None:
+						continue
 
 					face_point_cam = PointStamped()
 					face_point_cam.header.frame_id = camera_frame
 					face_point_cam.header.stamp = data.header.stamp
-					face_point_cam.point.x = x_cam
-					face_point_cam.point.y = y_cam
-					face_point_cam.point.z = z_cam
+					face_point_cam.point.x = point_cam[0]
+					face_point_cam.point.y = point_cam[1]
+					face_point_cam.point.z = point_cam[2]
 
 					face_point_map = do_transform_point(face_point_cam, transform)
 
@@ -207,6 +328,9 @@ class detect_faces(Node):
 
 		except CvBridgeError as e:
 			print(e)
+			self.marker_pub.publish(marker_array)
+		except Exception as e:
+			self.get_logger().warn(f"Face detection callback failed: {e}")
 			self.marker_pub.publish(marker_array)
 		finally:
 			self.processing = False

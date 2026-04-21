@@ -26,7 +26,8 @@
   <depend>piper</depend>
   <depend>pydub</depend>
   <depend>numpy</depend>
-  <depend>retinaface</depend>
+  <depend>matplotlib</depend>
+-  <depend>retinaface</depend>
   <depend>opencv-python</depend>
   <depend>tf-keras</depend>
 
