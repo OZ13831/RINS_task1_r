@@ -318,8 +318,8 @@ message(STATUS "Execute custom install script")
 # install(DIRECTORY "launch" "config" "maps" "DESTINATION" "share/task1_real/")
 ament_cmake_symlink_install_directory("/home/gamma/colcon_ws/src/task1_real" DIRECTORY "launch" "config" "maps" "DESTINATION" "share/task1_real/")
 
-# install(PROGRAMS "scripts/robot_commander.py" "DESTINATION" "lib/task1_real")
-ament_cmake_symlink_install_programs("/home/gamma/colcon_ws/src/task1_real" PROGRAMS "scripts/robot_commander.py" "DESTINATION" "lib/task1_real")
+# install(PROGRAMS "scripts/detect_people.py" "scripts/robot_commander.py" "DESTINATION" "lib/task1_real")
+ament_cmake_symlink_install_programs("/home/gamma/colcon_ws/src/task1_real" PROGRAMS "scripts/detect_people.py" "scripts/robot_commander.py" "DESTINATION" "lib/task1_real")
 
 # install(FILES "/home/gamma/colcon_ws/build/task1_real/ament_cmake_index/share/ament_index/resource_index/package_run_dependencies/task1_real" "DESTINATION" "share/ament_index/resource_index/package_run_dependencies")
 ament_cmake_symlink_install_files("/home/gamma/colcon_ws/src/task1_real" FILES "/home/gamma/colcon_ws/build/task1_real/ament_cmake_index/share/ament_index/resource_index/package_run_dependencies/task1_real" "DESTINATION" "share/ament_index/resource_index/package_run_dependencies")

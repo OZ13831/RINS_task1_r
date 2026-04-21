@@ -1,1 +1,1 @@
-rclpy;rclcpp;std_msgs;std_srvs;rosidl_default_generators;rosidl_default_runtime;piper;pydub;numpy;ament_lint_auto;ament_lint_common
+rclpy;rclcpp;std_msgs;std_srvs;geometry_msgs;sensor_msgs;visualization_msgs;tf2_ros;tf2_geometry_msgs;cv_bridge;rosidl_default_generators;rosidl_default_runtime;piper;pydub;numpy;retinaface;opencv-python;tf-keras;ament_lint_auto;ament_lint_common
