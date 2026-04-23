@@ -9,7 +9,7 @@
 /home/gamma/colcon_ws/install/task1_real/share/task1_real//maps/map1.yaml
 /home/gamma/colcon_ws/install/task1_real/lib/task1_real/detect_rings.py
 /home/gamma/colcon_ws/install/task1_real/lib/task1_real/detect_people.py
-/home/gamma/colcon_ws/install/task1_real/lib/task1_real/robot_commander.py
+/home/gamma/colcon_ws/install/task1_real/lib/task1_real/robot_commander2.py
 /home/gamma/colcon_ws/install/task1_real/share/ament_index/resource_index/package_run_dependencies/task1_real
 /home/gamma/colcon_ws/install/task1_real/share/ament_index/resource_index/parent_prefix_path/task1_real
 /home/gamma/colcon_ws/install/task1_real/share/task1_real/environment/ament_prefix_path.sh

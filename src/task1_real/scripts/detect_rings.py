@@ -11,7 +11,7 @@ from sensor_msgs.msg import Image, CameraInfo
 from std_msgs.msg import String
 from cv_bridge import CvBridge, CvBridgeError
 from visualization_msgs.msg import Marker, MarkerArray
-from geometry_msgs.msg import PointStamped
+from geometry_msgs.msg import PointStamped, Point
 from builtin_interfaces.msg import Duration as RosDuration
 from tf2_ros import Buffer, TransformListener, TransformException
 from tf2_geometry_msgs import do_transform_point
@@ -20,7 +20,7 @@ from rclpy.qos import QoSProfile, QoSReliabilityPolicy
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.duration import Duration
 from rclpy.time import Time
-ALREADY_SAVED = False
+
 qos_profile = QoSProfile(
           durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
           reliability=QoSReliabilityPolicy.RELIABLE,
@@ -70,8 +70,8 @@ def predict_color(ring_img, mask=None):
     v_masked = v[mask > 0]
     
     print("HSV (masked):", np.mean(h_masked), np.mean(s_masked), np.mean(v_masked))
-    # if np.mean(v_masked) < 140:
-    #     return "black"
+    if np.mean(v_masked) < 85:
+        return "black"
     
     hist = cv2.calcHist([h], [0], mask, [180], [0, 180])
     hist = cv2.normalize(hist, hist).flatten() 
@@ -113,7 +113,6 @@ class RingDetector(Node):
             parameters=[
                 ('upper_ratio', 0.5),
                 ('target_frame', 'map'),
-                ('hist_prefix', 'red5'),
             ],
         )
 
@@ -127,12 +126,6 @@ class RingDetector(Node):
         self.center_thr = 10
         self.upper_ratio = 0.4
         self.target_frame = self.get_parameter('target_frame').get_parameter_value().string_value
-        self.hist_prefix = self.get_parameter('hist_prefix').get_parameter_value().string_value
-        if self.hist_prefix == '':
-            self.hist_prefix = 'ring'
-        self.hist_output_dir = '/home/gamma/colcon_ws/new_hist'
-        os.makedirs(self.hist_output_dir, exist_ok=True)
-        self.hist_saved = False
         # An object we use for converting images between ROS format and OpenCV format
         self.bridge = CvBridge()
         self.rings = None
@@ -157,6 +150,8 @@ class RingDetector(Node):
 
         self.color_pub = self.create_publisher(String, "/ring_color", qos_profile_sensor_data)
         self.ring_pub = self.create_publisher(MarkerArray, "/rings", qos_profile)
+        self.ring_xy_pub = self.create_publisher(Marker, "/ring_xy_marker", qos_profile)
+        self.predicted_color_pub = self.create_publisher(String, "/ring_predicted_color", qos_profile_sensor_data)
 
         cv2.namedWindow("detected_circles", cv2.WINDOW_NORMAL)
         cv2.resizeWindow("detected_circles", 960, 540)
@@ -255,23 +250,6 @@ class RingDetector(Node):
 
         return kept
 
-    def save_ring_histogram_once(self, display_image, ring_mask):
-        if self.hist_saved:
-            return
-        if ring_mask is None or np.count_nonzero(ring_mask) == 0:
-            return
-
-        ring_mask_u8 = np.where(ring_mask > 0, 255, 0).astype(np.uint8)
-        hsv = cv2.cvtColor(display_image, cv2.COLOR_BGR2HSV)
-        hue = hsv[:, :, 0]
-        hist = cv2.calcHist([hue], [0], ring_mask_u8, [180], [0, 180])
-        hist = cv2.normalize(hist, hist).flatten()
-
-        histogram_path = os.path.join(self.hist_output_dir, f"{self.hist_prefix}_ring_hist.npy")
-        np.save(histogram_path, hist)
-        self.hist_saved = True
-        self.get_logger().info(f"Saved one ring histogram to {histogram_path}")
-
     def publish_ring_markers(self, ring_points_map, stamp):
         marker_array = MarkerArray()
 
@@ -302,6 +280,32 @@ class RingDetector(Node):
             marker_array.markers.append(marker)
 
         self.ring_pub.publish(marker_array)
+
+    def publish_ring_xy_marker(self, ring_points_map, stamp):
+        marker = Marker()
+        marker.header.frame_id = self.target_frame
+        marker.header.stamp = stamp
+        marker.ns = 'ring_xy'
+        marker.id = 0
+        marker.type = Marker.POINTS
+        marker.action = Marker.ADD
+        marker.pose.orientation.w = 1.0
+        marker.scale.x = 0.08
+        marker.scale.y = 0.08
+        marker.color.a = 1.0
+        marker.color.r = 0.0
+        marker.color.g = 1.0
+        marker.color.b = 1.0
+        marker.lifetime = RosDuration(sec=0, nanosec=600000000)
+
+        for x, y, _ in ring_points_map:
+            point = Point()
+            point.x = float(x)
+            point.y = float(y)
+            point.z = 0.0
+            marker.points.append(point)
+
+        self.ring_xy_pub.publish(marker)
 
     def image_callback(self, data):
         cv_image = self.bridge.imgmsg_to_cv2(data, "bgr8")
@@ -414,10 +418,13 @@ class RingDetector(Node):
                 ))
 
         self.publish_ring_markers(ring_points_map, data.header.stamp)
+        self.publish_ring_xy_marker(ring_points_map, data.header.stamp)
 
         display_image = cv2.bitwise_and(display_image, display_image, mask=ring_mask)
-        self.save_ring_histogram_once(display_image, ring_mask)
-        predict_color(display_image, ring_mask)
+        predicted_color = predict_color(display_image, ring_mask)
+        if predicted_color:
+            self.color_pub.publish(String(data=predicted_color))
+            self.predicted_color_pub.publish(String(data=predicted_color))
 
 
         cv2.imshow("detected_circles", display_image)
