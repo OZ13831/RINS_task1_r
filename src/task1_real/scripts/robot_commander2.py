@@ -58,20 +58,9 @@ amcl_pose_qos = QoSProfile(
           reliability=QoSReliabilityPolicy.RELIABLE,
           history=QoSHistoryPolicy.KEEP_LAST,
           depth=1)
-FACE_APPROACH_OFFSET = 1 
-FACE_DEDUP_RADIUS = 0.9
-FACE_DETECT_THRESH = 2.5
-RING_DETECT_THRESH = 2.0
+FACE_APPROACH_OFFSET = 0.4
+FACE_DEDUP_RADIUS = 0.4
 
-positions = [
-    (-0.1507724543037919, -0.23072254256144112, 0.010314225539944995, 0.9999468069610059),
-    (-1.0787596142327023, 0.07095596776899823, 0.6757020706193354, 0.7371748176387625),
-    (-1.5680253300909357, 0.6118240461801674, -0.5533078237449448, 0.8329768617330454),
-    (-2.191311838738374, -0.0723548724483136, 0.7969551542150811, 0.6040384773919757),
-    (-3.1314396350047202, 0.4414679464953455, -0.6794658614896312, 0.7337071234969396),
-    (-3.2835393036433405, -0.10195187443663478, 0.5270695181045316, 0.8498221714482723),
-    (-3.716156298638488, -0.20608935460419006, -0.9949289061152515, 0.10058067297601933),
-]
 class RobotCommander(Node):
 
     def __init__(self, node_name='robot_commander', namespace=''):
@@ -106,7 +95,7 @@ class RobotCommander(Node):
         self.create_subscription(DockStatus, 'dock_status', self._dockCallback, qos_profile_sensor_data)
         self.localization_pose_sub = self.create_subscription(PoseWithCovarianceStamped, 'amcl_pose', self._amclPoseCallback, amcl_pose_qos)
         self.create_subscription(MarkerArray, "/people_markers", self._faceMarkerCallback, qos_profile_sensor_data)
-        self.create_subscription(MarkerArray, "/rings", self._ringMarkerCallback, qos_profile_sensor_data)
+        self.create_subscription(Marker, "/ring_xy_marker", self._ringMarkerCallback, qos_profile_sensor_data)
         self.create_subscription(String, "/ring_color", self._ringColorCallback, qos_profile_sensor_data)
         self.create_subscription(String, "/ring_predicted_color", self._ringColorCallback, qos_profile_sensor_data)
         # ROS2 publishers
@@ -116,7 +105,13 @@ class RobotCommander(Node):
             reliability=QoSReliabilityPolicy.RELIABLE,
             history=QoSHistoryPolicy.KEEP_LAST,
             depth=1))
-        
+        self.speak_pub = self.create_publisher(String, '/speak', 10)
+        self.one_publish = self.create_publisher(MarkerArray, '/one_markers', QoSProfile(
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=1))
+
         # ROS2 Action clients
         self.nav_to_pose_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
         self.spin_client = ActionClient(self, Spin, 'spin')
@@ -127,6 +122,7 @@ class RobotCommander(Node):
         
     def destroyNode(self):
         self.nav_to_pose_client.destroy()
+        self.speak_pub.destroy()
         super().destroy_node()     
 
     def goToPose(self, pose, behavior_tree=''):
@@ -462,9 +458,6 @@ class RobotCommander(Node):
                 continue
 
             mx, my = map_point
-            if not self._is_within_robot_distance(mx, my, FACE_DETECT_THRESH):
-                continue
-
             if self.is_face_already_seen(mx, my):
                 continue
 
@@ -473,34 +466,32 @@ class RobotCommander(Node):
                 self._pending_face = (avg_x, avg_y)
                 self.info(f"Face detected at map ({avg_x:.2f}, {avg_y:.2f}), queued.")
  
-    def _ringMarkerCallback(self, msg: MarkerArray):
-        for marker in msg.markers:
-            if marker.action != Marker.ADD:
-                continue
+    def _ringMarkerCallback(self, msg: Marker):
+        marker = msg
+        if marker.action != Marker.ADD:
+            return
 
-            map_point = self._transform_point_to_map(
-                marker.pose.position.x,
-                marker.pose.position.y,
-                marker.pose.position.z,
-                marker.header,
-            )
-            if map_point is None:
-                continue
+        map_point = self._transform_point_to_map(
+            marker.pose.position.x,
+            marker.pose.position.y,
+            marker.pose.position.z,
+            marker.header,
+        )
+        if map_point is None:
+            return
 
-            mx, my = map_point
-            if not self._is_within_robot_distance(mx, my, RING_DETECT_THRESH):
-                continue
+        mx, my = map_point
 
-            if self.is_ring_already_seen(mx, my):
-                continue
+        if self.is_ring_already_seen(mx, my):
+            return
 
-            if self.recent_color in self.classified_colors:
-                self.classified_colors[self.recent_color] += 1
+        if self.recent_color in self.classified_colors:
+            self.classified_colors[self.recent_color] += 1
 
-            avg_x, avg_y = self._register_ring(mx, my)
-            if avg_x is not None and self._pending_ring is None:
-                self._pending_ring = (avg_x, avg_y)
-                self.info(f"Ring detected at map ({avg_x:.2f}, {avg_y:.2f}), queued.")
+        avg_x, avg_y = self._register_ring(mx, my)
+        if avg_x is not None and self._pending_ring is None:
+            self._pending_ring = (avg_x, avg_y)
+            self.info(f"Ring detected at map ({avg_x:.2f}, {avg_y:.2f}), queued.")
 
 
     def _ringColorCallback(self, msg: String):
@@ -550,14 +541,6 @@ class RobotCommander(Node):
             return None
  
         return transformed.point.x, transformed.point.y
-
-    def _is_within_robot_distance(self, map_x: float, map_y: float, threshold: float) -> bool:
-        if not hasattr(self, "current_pose") or self.current_pose is None:
-            return True
-
-        robot_x = self.current_pose.pose.position.x
-        robot_y = self.current_pose.pose.position.y
-        return math.hypot(map_x - robot_x, map_y - robot_y) <= threshold
  
     # ── Deduplication ──────────────────────────────────────────────────────────
     def is_ring_already_seen(self, map_x: float, map_y: float) -> bool:
@@ -610,12 +593,60 @@ class RobotCommander(Node):
         return None, None
 
 
+    def  publish_one_seen(self):
+        marker_array = MarkerArray()
+
+        for i, (fx, fy) in enumerate(self.one_face_positions):
+            # ── sphere at the face position ──────────────────────────────────
+            sphere = Marker()
+            sphere.header.frame_id = "map"
+            sphere.header.stamp = self.get_clock().now().to_msg()
+            sphere.ns = "seen_faces"
+            sphere.id = i * 2          # even ids → spheres
+            sphere.type = Marker.SPHERE
+            sphere.action = Marker.ADD
+            sphere.pose.position.x = fx
+            sphere.pose.position.y = fy
+            sphere.pose.position.z = 0.3        # raise slightly above ground
+            sphere.pose.orientation.w = 1.0
+            sphere.scale.x = 0.25
+            sphere.scale.y = 0.25
+            sphere.scale.z = 0.25
+            sphere.color.r = 1.0
+            sphere.color.g = 0.3
+            sphere.color.b = 0.0
+            sphere.color.a = 1.0
+            sphere.lifetime.sec = 0             # 0 → marker lives forever
+            marker_array.markers.append(sphere)
+
+            # ── text label above the sphere ──────────────────────────────────
+            label = Marker()
+            label.header.frame_id = "map"
+            label.header.stamp = sphere.header.stamp
+            label.ns = "seen_faces_labels"
+            label.id = i * 2 + 1       # odd ids → labels
+            label.type = Marker.TEXT_VIEW_FACING
+            label.action = Marker.ADD
+            label.pose.position.x = fx
+            label.pose.position.y = fy
+            label.pose.position.z = 0.65
+            label.pose.orientation.w = 1.0
+            label.scale.z = 0.18        # text height in metres
+            label.color.r = 1.0
+            label.color.g = 1.0
+            label.color.b = 1.0
+            label.color.a = 1.0
+            label.text = f"Face #{i + 1}"
+            label.lifetime.sec = 0
+            marker_array.markers.append(label)
+        self.one_publish.publish(marker_array)
 
     def _register_face(self, map_x: float, map_y: float):
         """Record a face location so we never visit it again."""
         #self.seen_faces.append((map_x, map_y))
         if not self.going_to_face:
             self.one_face_positions.append((map_x, map_y))
+            self.publish_one_seen()
 
         if len(self.one_face_positions) > 25 and not self.going_to_ring:
             self.going_to_face = True
@@ -673,98 +704,104 @@ def make_pose(rc, x, y, qz, qw):
     pose.pose.orientation = Quaternion(x=0.0, y=0.0, z=qz, w=qw)
     return pose
 def main(args=None):
-    
-
+    positions = [
+    #(-0.1507724543037919, -0.23072254256144112, 0.010314225539944995, 0.9999468069610059),
+    (-0.9198282301753373, -0.10762984551283342, 0.8100609432123049, 0.5863456900856276),
+    (-1.5866502778489406, 0.7317233527968411, -0.5793155795278797, 0.8151033427218152),
+    (-2.2618125454904896, -0.06564286960134255, 0.958429748974962, 0.28532861104311164),
+    (-3.1314396350047202, 0.4414679464953455, -0.6794658614896312, 0.7337071234969396),
+    (-3.2835393036433405, -0.10195187443663478, 0.5270695181045316, 0.8498221714482723),
+    (-3.716156298638488, -0.20608935460419006, -0.9949289061152515, 0.10058067297601933),
+    ]
     rclpy.init(args=args)
     rc = RobotCommander()
-    voice = PiperVoice.load("./en_US-lessac-medium.onnx")
-    with wave.open("Greet.wav", "wb") as wav_file:
-        voice.synthesize_wav("Hello, I am a robot.", wav_file)
-    
-
     # Wait until Nav2 and Localizer are available
     rc.waitUntilNav2Active()
 
-    # Check if the robot is docked, only continue when a message is recieved
-    while rc.is_docked is None:
-        rclpy.spin_once(rc, timeout_sec=0.5)
+    # If it is docked, undock it first
+    if rc.is_docked:
+        print("robot is docked")
+        rc.undock()
+        print("robot is undocked")
+    print("Not docked", rc.is_docked)
+    
     interupted = False
     count_faces = 0
     count_rings = 0
-    # If it is docked, undock it first
-    if rc.is_docked:
-        rc.undock()
+
+    print("starting execution")
     while count_faces < 3 or count_rings < 2:
         for (x, y, qz, qw) in positions:
             goal_pose = make_pose(rc, x, y, qz, qw)
             rc.goToPose(goal_pose)
+            print("Going to waypoint: ", x, y)
 
             while not rc.isTaskComplete():
                 rclpy.spin_once(rc, timeout_sec=0.1)
 
-                if rc._pending_ring is not None:
-                    ring_x, ring_y = rc._pending_ring
-                    rc._pending_ring = None
+            #     if rc._pending_ring is not None:
+            #         ring_x, ring_y = rc._pending_ring
+            #         rc._pending_ring = None
 
-                    rc._interrupted_waypoint = (x, y, qz, qw)
-                    rc.cancelTask()
-                    rc.navigate_to_face(ring_x, ring_y)
+            #         rc._interrupted_waypoint = (x, y, qz, qw)
+            #         rc.cancelTask()
+            #         rc.navigate_to_face(ring_x, ring_y)
 
-                    while not rc.isTaskComplete():
-                        rclpy.spin_once(rc, timeout_sec=0.1)
-                    count_rings += 1
-                    rc.info("MADE IT TO RING")
-                    temp = None
-                    maxCount = -1
-                    print("CLASSIFIED COLORS: ", rc.classified_colors)
-                    for color, count in rc.classified_colors.items():
-                        if count > maxCount:
-                            maxCount = count
-                            temp = color
-                    fileName = f"{temp}.wav"
-                    sound = AudioSegment.from_file(fileName, format="wav")
-                    play(sound)
-                    #rc.seen_rings.append((ring_x, ring_y))
-                    for color, count in rc.classified_colors.items():
-                        rc.classified_colors[color] = 0
-                    sleep_duration = 0.3
-                    rc.info(f"Robot staying in place for {sleep_duration} seconds...")
-                    time.sleep(sleep_duration)
-                    rc.info("Ring visit done, resuming waypoint...")
+            #         while not rc.isTaskComplete():
+            #             rclpy.spin_once(rc, timeout_sec=0.1)
+            #         count_rings += 1
+            #         rc.info("MADE IT TO RING")
+            #         temp = None
+            #         maxCount = -1
+            #         print("CLASSIFIED COLORS: ", rc.classified_colors)
+            #         for color, count in rc.classified_colors.items():
+            #             if count > maxCount:
+            #                 maxCount = count
+            #                 temp = color
+            #         if temp is not None:
+            #             rc.info(f"Most likely color is {temp} with {maxCount} classifications.")
+            #             speak_msg = String()
+            #             speak_msg.data = f"I see a {temp} ring."
+            #             rc.speak_pub.publish(speak_msg)
+            #         #rc.seen_rings.append((ring_x, ring_y))
+            #         for color, count in rc.classified_colors.items():
+            #             rc.classified_colors[color] = 0
+            #         sleep_duration = 0.3
+            #         rc.info(f"Robot staying in place for {sleep_duration} seconds...")
+            #         time.sleep(sleep_duration)
+            #         rc.info("Ring visit done, resuming waypoint...")
                 
-                    interupted = True
+            #         interupted = True
 
 
-                if rc._pending_face is not None:
-                    face_x, face_y = rc._pending_face
-                    rc._pending_face = None
+            #     if rc._pending_face is not None:
+            #         face_x, face_y = rc._pending_face
+            #         rc._pending_face = None
 
-                    rc._interrupted_waypoint = (x, y, qz, qw)
-                    rc.cancelTask()
-                    rc.navigate_to_face(face_x, face_y)
+            #         rc._interrupted_waypoint = (x, y, qz, qw)
+            #         rc.cancelTask()
+            #         rc.navigate_to_face(face_x, face_y)
 
-                    while not rc.isTaskComplete():
-                        rclpy.spin_once(rc, timeout_sec=0.1)
-                    rc.info("MADE IT TO FACE")
+            #         while not rc.isTaskComplete():
+            #             rclpy.spin_once(rc, timeout_sec=0.1)
+            #         rc.info("MADE IT TO FACE")
+            #         rc.speak_pub.publish(String(data="Hello, human!"))
+            #         sleep_duration = 0.4
+            #         rc.info(f"Robot staying in place for {sleep_duration} seconds...")
+            #         time.sleep(sleep_duration)
+            #         rc.info("Face visit done, resuming waypoint...")
+            #         count_faces += 1
+            #         interupted = True
+            #     if count_faces >= 3 and count_rings >= 2:
+            #         break
 
-                    sound = AudioSegment.from_file("Greet.wav", format="wav")
-                    play(sound)
-                    sleep_duration = 0.3
-                    rc.info(f"Robot staying in place for {sleep_duration} seconds...")
-                    time.sleep(sleep_duration)
-                    rc.info("Face visit done, resuming waypoint...")
-                    count_faces += 1
-                    interupted = True
-                if count_faces >= 3 and count_rings >= 2:
-                    break
+            #     if interupted:
+            #         ix, iy, iqz, iqw = rc._interrupted_waypoint
+            #         rc._interrupted_waypoint = None
+            #         goal_pose = make_pose(rc, ix, iy, iqz, iqw)
+            #         rc.goToPose(goal_pose)
 
-                if interupted:
-                    ix, iy, iqz, iqw = rc._interrupted_waypoint
-                    rc._interrupted_waypoint = None
-                    goal_pose = make_pose(rc, ix, iy, iqz, iqw)
-                    rc.goToPose(goal_pose)
-
-                    interupted = False
+            #         interupted = False
 
             result = rc.getResult()
             rc.info(f"Waypoint result: {result}")
