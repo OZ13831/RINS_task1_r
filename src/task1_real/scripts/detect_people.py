@@ -7,6 +7,7 @@ from rclpy.duration import Duration
 from rclpy.time import Time
 from retinaface import RetinaFace
 from sensor_msgs.msg import Image, CameraInfo
+from nav_msgs.msg import OccupancyGrid
 from geometry_msgs.msg import PointStamped
 import tf2_ros
 from tf2_ros import TransformException
@@ -30,8 +31,10 @@ class detect_faces(Node):
 				('device', ''),
 				('depth_topic', '/gemini/depth/image_raw'),
 				('camera_info_topic', '/gemini/color/camera_info'),
+				('map_topic', '/map'),
+				('map_bounds_padding', 0.25),
+				('map_bounds_hard', False),
 				('target_frame', 'map'),
-				('inference_scale', 0.5),
 				('show_image', True),
 				('top_crop_ratio', 0.3),
 				('bottom_crop_ratio', 0.3),
@@ -44,12 +47,13 @@ class detect_faces(Node):
 		self.device = self.get_parameter('device').get_parameter_value().string_value
 		self.depth_topic = self.get_parameter('depth_topic').get_parameter_value().string_value
 		self.camera_info_topic = self.get_parameter('camera_info_topic').get_parameter_value().string_value
+		self.map_topic = self.get_parameter('map_topic').get_parameter_value().string_value
+		self.map_bounds_padding = self.get_parameter('map_bounds_padding').get_parameter_value().double_value
+		self.map_bounds_hard = self.get_parameter('map_bounds_hard').get_parameter_value().bool_value
 		self.target_frame = self.get_parameter('target_frame').get_parameter_value().string_value
-		self.inference_scale = self.get_parameter('inference_scale').get_parameter_value().double_value
 		self.show_image = self.get_parameter('show_image').get_parameter_value().bool_value
 		self.top_crop_ratio = self.get_parameter('top_crop_ratio').get_parameter_value().double_value
 		self.bottom_crop_ratio = self.get_parameter('bottom_crop_ratio').get_parameter_value().double_value
-		self.inference_scale = max(0.1, min(self.inference_scale, 1.0))
 		self.top_crop_ratio = max(0.0, min(self.top_crop_ratio, 0.45))
 		self.bottom_crop_ratio = max(0.0, min(self.bottom_crop_ratio, 0.45))
 
@@ -64,6 +68,10 @@ class detect_faces(Node):
 		self.cx = None
 		self.cy = None
 		self.camera_frame_id = None
+		self.map_min_x = None
+		self.map_max_x = None
+		self.map_min_y = None
+		self.map_max_y = None
 
 		self.tf_buffer = tf2_ros.Buffer()
 		self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
@@ -71,14 +79,41 @@ class detect_faces(Node):
 		self.rgb_image_sub = self.create_subscription(Image, "/gemini/color/image_raw", self.rgb_callback, qos_profile_sensor_data)
 		self.depth_sub = self.create_subscription(Image, self.depth_topic, self.depth_callback, qos_profile_sensor_data)
 		self.camera_info_sub = self.create_subscription(CameraInfo, self.camera_info_topic, self.camera_info_callback, qos_profile_sensor_data)
+		self.map_sub = self.create_subscription(OccupancyGrid, self.map_topic, self.map_callback, qos_profile_sensor_data)
 
 		self.marker_pub = self.create_publisher(MarkerArray, marker_topic, QoSReliabilityPolicy.BEST_EFFORT)
 
-		self.faces = []
 		self.processing = False
 
 		self.get_logger().info(
 			f"Node has been initialized! Will publish face markers to {marker_topic} in frame {self.target_frame} using depth topic {self.depth_topic}."
+		)
+		self.get_logger().info(f"Waiting for map on {self.map_topic} to enable map bounds checking.")
+
+	def map_callback(self, data):
+		# Cache map boundaries for quick inside-map checks.
+		if data.info.width == 0 or data.info.height == 0 or data.info.resolution <= 0.0:
+			return
+
+		origin_x = float(data.info.origin.position.x)
+		origin_y = float(data.info.origin.position.y)
+		width_m = float(data.info.width) * float(data.info.resolution)
+		height_m = float(data.info.height) * float(data.info.resolution)
+
+		self.map_min_x = origin_x
+		self.map_max_x = origin_x + width_m
+		self.map_min_y = origin_y
+		self.map_max_y = origin_y + height_m
+
+	def _is_inside_map(self, x, y):
+		# Skip filtering when map bounds are not ready.
+		if None in (self.map_min_x, self.map_max_x, self.map_min_y, self.map_max_y):
+			return True
+
+		padding = max(0.0, float(self.map_bounds_padding))
+		return (
+			(self.map_min_x - padding) <= x <= (self.map_max_x + padding)
+			and (self.map_min_y - padding) <= y <= (self.map_max_y + padding)
 		)
 
 	def camera_info_callback(self, data):
@@ -163,22 +198,7 @@ class detect_faces(Node):
 		encoding = self.latest_depth_msg.encoding
 		depth_m = self._depth_to_meters(self.latest_depth_image[depth_y, depth_x], encoding)
 		if depth_m is None:
-			window = 2
-			x_start = max(0, depth_x - window)
-			x_end = min(depth_width, depth_x + window + 1)
-			y_start = max(0, depth_y - window)
-			y_end = min(depth_height, depth_y + window + 1)
-			patch = self.latest_depth_image[y_start:y_end, x_start:x_end]
-			patch_flat = patch.reshape(-1)
-			depth_m = None
-			for value in patch_flat:
-				depth_m_candidate = self._depth_to_meters(value, encoding)
-				if depth_m_candidate is not None:
-					depth_m = depth_m_candidate
-					break
-			if depth_m is None:
-				return None
-
+			return None
 		depth_y_full = self.depth_y_start + depth_y
 		return float(depth_x), float(depth_y_full), float(depth_m)
 
@@ -202,15 +222,13 @@ class detect_faces(Node):
 
 		self.processing = True
 
-		self.faces = []
 		marker_array = MarkerArray()
 
-		clear_marker = Marker()
-		clear_marker.action = Marker.DELETEALL
-		marker_array.markers.append(clear_marker)
+		# clear_marker = Marker()
+		# clear_marker.action = Marker.DELETEALL
+		# marker_array.markers.append(clear_marker)
 
 		if self.latest_depth_msg is None or self.latest_depth_image is None:
-			self.marker_pub.publish(marker_array)
 			self.processing = False
 			return
 
@@ -225,11 +243,9 @@ class detect_faces(Node):
 		try:
 
 			if cropped_image.size == 0:
-				self.marker_pub.publish(marker_array)
 				return
 
-			scaled_image = cv2.resize(cropped_image, (0, 0), fx=self.inference_scale, fy=self.inference_scale)
-			res = RetinaFace.detect_faces(scaled_image)
+			res = RetinaFace.detect_faces(cropped_image)
 
 			depth_msg = self.latest_depth_msg
 			camera_frame = self.camera_frame_id if self.camera_frame_id else data.header.frame_id
@@ -256,13 +272,15 @@ class detect_faces(Node):
 						f"Could not lookup transform {camera_frame} -> {self.target_frame}: {fallback_ex}"
 					)
 
-			if isinstance(res, dict):
+			if isinstance(res, dict) and len(res) > 0:
+
+				# print(f"Detected {len(res)} faces in the current frame.")
 				for marker_id, face_data in enumerate(res.values()):
 					bbox = face_data.get("facial_area")
 					if bbox is None or len(bbox) != 4:
 						continue
 
-					x1, y1, x2, y2 = [int(v / self.inference_scale) for v in bbox]
+					x1, y1, x2, y2 = [v for v in bbox]
 					y1 += y_start
 					y2 += y_start
 
@@ -277,8 +295,6 @@ class detect_faces(Node):
 					cy = int((y1 + y2) / 2)
 
 					cv_image = cv2.circle(cv_image, (cx, cy), 5, self.detection_color, -1)
-
-					self.faces.append((cx, cy))
 
 					if transform is None:
 						continue
@@ -296,6 +312,16 @@ class detect_faces(Node):
 
 					face_point_map = do_transform_point(face_point_cam, transform)
 
+					if not self._is_inside_map(face_point_map.point.x, face_point_map.point.y):
+						if self.map_bounds_hard:
+							self.get_logger().debug(
+								"Face outside map bounds, skipping marker."
+							)
+							continue
+						self.get_logger().debug(
+							"Face outside map bounds, keeping marker due to soft mode."
+						)
+
 					marker = Marker()
 					marker.header.frame_id = self.target_frame
 					marker.header.stamp = data.header.stamp
@@ -310,14 +336,16 @@ class detect_faces(Node):
 					marker.scale.x = 0.15
 					marker.scale.y = 0.15
 					marker.scale.z = 0.15
-					marker.color.r = 1.0
-					marker.color.g = 0.2
+
+					marker.color.r = 0.2
+					marker.color.g = 1.0
 					marker.color.b = 0.2
 					marker.color.a = 1.0
 
 					marker_array.markers.append(marker)
 
-			self.marker_pub.publish(marker_array)
+				print(f"Detected face on coordinate ({face_point_map.point.x}, {face_point_map.point.y}).")
+				self.marker_pub.publish(marker_array)
 
 			if self.show_image:
 				cv2.imshow("image", cropped_image)

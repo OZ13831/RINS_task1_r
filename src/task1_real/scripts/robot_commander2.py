@@ -17,16 +17,11 @@
 from enum import Enum
 import time
 import math
-import wave
-from matplotlib.pyplot import rc
-from piper import PiperVoice, SynthesisConfig
-from pydub import AudioSegment
-from pydub.playback import play
 import numpy as np
 
 from action_msgs.msg import GoalStatus
 from builtin_interfaces.msg import Duration
-from geometry_msgs.msg import Quaternion, PoseStamped, PoseWithCovarianceStamped, PointStamped
+from geometry_msgs.msg import Quaternion, PoseStamped, PoseWithCovarianceStamped
 from visualization_msgs.msg import Marker, MarkerArray
 from lifecycle_msgs.srv import GetState
 from nav2_msgs.action import Spin, NavigateToPose
@@ -38,14 +33,11 @@ from irobot_create_msgs.msg import DockStatus
 
 import rclpy
 from rclpy.action import ActionClient
-from rclpy.duration import Duration as rclpyDuration
 from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy
 from rclpy.qos import qos_profile_sensor_data
 
-from tf2_ros import Buffer, TransformListener
-from tf2_geometry_msgs import do_transform_point
 
 class TaskResult(Enum):
     UNKNOWN = 0
@@ -58,8 +50,11 @@ amcl_pose_qos = QoSProfile(
           reliability=QoSReliabilityPolicy.RELIABLE,
           history=QoSHistoryPolicy.KEEP_LAST,
           depth=1)
-FACE_APPROACH_OFFSET = 0.4
-FACE_DEDUP_RADIUS = 0.4
+FACE_APPROACH_OFFSET = 0.55
+FACE_DEDUP_RADIUS = 0.6
+FACE_DETECT_THRESH = 0.8
+RING_DETECT_THRESH = 1.5
+FACE_STALE_SEC = 15.0
 
 class RobotCommander(Node):
 
@@ -76,13 +71,14 @@ class RobotCommander(Node):
         self.status = None
         self.initial_pose_received = False
         self.is_docked = None
-        self.going_to_face = False # če je zaznal obraz in gre proti njemu je TRue, sicer False
+        self.going_to_face = False # če je zaznal obraz in gre proti njemu je True, sicer False
         self.going_to_ring = False
         self.recent_color = None
         self.safe = True  # becomes False if we send a new goal before the previous one finishes; used to suppress feedback/result of old goal
+        self.current_pose = None
+        self.last_face_detection_time = None
 
-        self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self)
+
         self.seen_faces: list[tuple[float, float]] = []
         self.seen_rings: list[tuple[float, float]] = []
         self.one_face_positions: list[tuple[float, float]] = []  # for averaging multiple detections of the same face
@@ -91,13 +87,13 @@ class RobotCommander(Node):
         self._pending_ring: tuple[float, float] | None = None  # set by callback, read by main loop
         self._interrupted_waypoint: tuple[float, float, float, float] | None = None  # (x, y, qz, qw)
         self.classified_colors = {"black": 0, "red": 0, "green": 0, "blue": 0}
+
         # ROS2 subscribers
         self.create_subscription(DockStatus, 'dock_status', self._dockCallback, qos_profile_sensor_data)
         self.localization_pose_sub = self.create_subscription(PoseWithCovarianceStamped, 'amcl_pose', self._amclPoseCallback, amcl_pose_qos)
-        self.create_subscription(MarkerArray, "/people_markers", self._faceMarkerCallback, qos_profile_sensor_data)
-        self.create_subscription(Marker, "/ring_xy_marker", self._ringMarkerCallback, qos_profile_sensor_data)
+        self.create_subscription(Marker, "/people_markers", self._faceMarkerCallback, qos_profile_sensor_data)
+        self.create_subscription(Marker, "/rings", self._ringMarkerCallback, qos_profile_sensor_data)
         self.create_subscription(String, "/ring_color", self._ringColorCallback, qos_profile_sensor_data)
-        self.create_subscription(String, "/ring_predicted_color", self._ringColorCallback, qos_profile_sensor_data)
         # ROS2 publishers
         self.initial_pose_pub = self.create_publisher(PoseWithCovarianceStamped, 'initialpose', 10)
         self.seen_pub = self.create_publisher(MarkerArray, '/seen_markers', QoSProfile(
@@ -105,8 +101,11 @@ class RobotCommander(Node):
             reliability=QoSReliabilityPolicy.RELIABLE,
             history=QoSHistoryPolicy.KEEP_LAST,
             depth=1))
+        self.mode_pub = self.create_publisher(String, '/mode', 10)
+        # publisher for speach
         self.speak_pub = self.create_publisher(String, '/speak', 10)
-        self.one_publish = self.create_publisher(MarkerArray, '/one_markers', QoSProfile(
+
+        self.one_face_publish = self.create_publisher(MarkerArray, '/one_markers', QoSProfile(
             durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
             reliability=QoSReliabilityPolicy.RELIABLE,
             history=QoSHistoryPolicy.KEEP_LAST,
@@ -217,13 +216,11 @@ class RobotCommander(Node):
         self.info('Undock succeeded')
         return True
 
-
     def cancelTask(self):
         self.info('Canceling current task.')
         if self.result_future and self.goal_handle:
             self._cancel_future = self.goal_handle.cancel_goal_async()
         self.safe = True
-
 
     def isTaskComplete(self):
         """Check if the task request of any type is complete yet."""
@@ -307,6 +304,7 @@ class RobotCommander(Node):
     
     def _goalDoneCallback(self, future):
         """Callback when goToPose goal completes."""
+        print("Goal done callback triggered.")
         self.going_to_face = False
         self.going_to_ring = False
         return
@@ -339,7 +337,7 @@ class RobotCommander(Node):
         self.get_logger().debug(msg)
         return
 
-# -- FACE FUNCTIONS --
+    #  publishes seen rings and seen faces
     def publish_seen(self):
         """
         Publish a MarkerArray containing a sphere for every confirmed seen face.
@@ -364,8 +362,8 @@ class RobotCommander(Node):
             sphere.scale.x = 0.25
             sphere.scale.y = 0.25
             sphere.scale.z = 0.25
-            sphere.color.r = 1.0
-            sphere.color.g = 0.3
+            sphere.color.r = 0.3
+            sphere.color.g = 1.0
             sphere.color.b = 0.0
             sphere.color.a = 1.0
             sphere.lifetime.sec = 0             # 0 → marker lives forever
@@ -439,53 +437,68 @@ class RobotCommander(Node):
         self.seen_pub.publish(marker_array)
         self.info(f"Published {len(self.seen_rings)} seen-ring marker(s) to /seen_markers")
 
-    def _faceMarkerCallback(self, msg: MarkerArray):
-        for marker in msg.markers:
-            if marker.action != Marker.ADD:
-                continue
-            if marker.ns != "detected_faces":
-                continue
-            if marker.type != Marker.SPHERE:
-                continue
+    def _faceMarkerCallback(self, msg: Marker):
+        marker = msg
+        print("Received face marker now: ", marker.pose.position.x, marker.pose.position.y)
+        if self.going_to_face == True:
+            return
+        #self._maybe_clear_stale_faces()
+        if (math.sqrt((marker.pose.position.x - self.current_pose.pose.position.x)**2 + (marker.pose.position.y - self.current_pose.pose.position.y)**2)) > FACE_DETECT_THRESH:
+            # print("Distance from robot: ", math.sqrt((marker.pose.position.x - self.current_pose.pose.position.x)**2 + (marker.pose.position.y - self.current_pose.pose.position.y)**2))
+            return
 
-            map_point = self._transform_point_to_map(
-                marker.pose.position.x,
-                marker.pose.position.y,
-                marker.pose.position.z,
-                marker.header,
-            )
-            if map_point is None:
-                continue
 
-            mx, my = map_point
-            if self.is_face_already_seen(mx, my):
-                continue
+        # to delamo ze v detect_people
 
-            avg_x, avg_y = self._register_face(mx, my)
-            if avg_x is not None and self._pending_face is None:
-                self._pending_face = (avg_x, avg_y)
-                self.info(f"Face detected at map ({avg_x:.2f}, {avg_y:.2f}), queued.")
+        # map_point = self._transform_point_to_map(
+        #     marker.pose.position.x,
+        #     marker.pose.position.y,
+        #     marker.pose.position.z,
+        #     marker.header,
+        # )
+        
+
+        if marker is None:
+            return
+
+        mx, my = marker.pose.position.x, marker.pose.position.y
+        if self.is_face_already_seen(mx, my):
+            return
+        
+        print(f"Detected face at map ({mx:.2f}, {my:.2f}), not seen before.")
+        median_x, median_y = self._register_face(mx, my)
+        if median_x is not None and self._pending_face is None:
+            print("Set pending face to: ", median_x, median_y)
+            self._pending_face = (median_x, median_y) # main loop will read and clear this to trigger navigation towards the face
+            self.info(f"Face detected at map ({median_x:.2f}, {median_y:.2f}), queued.")
+        #self.last_face_detection_time = self.get_clock().now()
  
     def _ringMarkerCallback(self, msg: Marker):
+        if self.going_to_ring == True:
+            return
+        # print("Received ring marker array with ", len(msg.markers), " markers")
+        if self.current_pose is None:
+            return
         marker = msg
-        if marker.action != Marker.ADD:
+        if marker is None:
+            # print("Marker is None")
             return
 
-        map_point = self._transform_point_to_map(
-            marker.pose.position.x,
-            marker.pose.position.y,
-            marker.pose.position.z,
-            marker.header,
-        )
-        if map_point is None:
-            return
+        # if marker.action != Marker.ADD:
+        #     continue
 
-        mx, my = map_point
+        mx, my = marker.pose.position.x, marker.pose.position.y
+        robot_x = self.current_pose.pose.position.x
+        robot_y = self.current_pose.pose.position.y
+        if math.hypot(mx - robot_x, my - robot_y) > RING_DETECT_THRESH:
+            # print("Tooo faaaaar: ", math.hypot(mx - robot_x, my - robot_y))
+            return
 
         if self.is_ring_already_seen(mx, my):
+            # print("Ring already seen at: ", mx, my)
             return
-
-        if self.recent_color in self.classified_colors:
+        print(f"recent color: {self.recent_color} and going to ring: {self.going_to_ring}")
+        if self.recent_color in self.classified_colors and not self.going_to_ring:
             self.classified_colors[self.recent_color] += 1
 
         avg_x, avg_y = self._register_ring(mx, my)
@@ -498,50 +511,18 @@ class RobotCommander(Node):
         self.recent_color = msg.data
         print(f"Classified colors: {self.classified_colors}")
         print("One ring positions:", len(self.one_ring_positions))
-        print("Goint to ring:", self.going_to_ring)
+        print("Going to ring:", self.going_to_ring)
 
-    # ── TF transform helper ────────────────────────────────────────────────────
- 
-    def _transform_point_to_map(self, x: float, y: float, z: float, header) -> tuple[float, float] | None:
-        """
-        Transform a point from its source frame
-        into the map frame.
- 
-        Returns (map_x, map_y) or None if the transform is unavailable.
-        """
-        source_frame = header.frame_id.lstrip("/") if header.frame_id else "map"
-        target_frame = "map"
+    # def _maybe_clear_stale_faces(self):
+    #     if self.last_face_detection_time is None:
+    #         return
 
-        if source_frame == target_frame:
-            return float(x), float(y)
- 
-        try:
-            # Look up the latest available transform (timeout 0.5 s)
-            transform = self.tf_buffer.lookup_transform(
-                target_frame,
-                source_frame,
-                rclpy.time.Time(),
-                timeout=rclpyDuration(seconds=0.5),
-            )
-        except Exception as e:
-            self.warn(f"TF lookup failed ({source_frame} → map): {e}")
-            return None
- 
-        # Wrap the marker position in a PointStamped so tf2 can transform it
-        pt = PointStamped()
-        pt.header = header
-        pt.point.x = float(x)
-        pt.point.y = float(y)
-        pt.point.z = float(z)
- 
-        try:
-            transformed = do_transform_point(pt, transform)
-        except Exception as e:
-            self.warn(f"TF transform failed: {e}")
-            return None
- 
-        return transformed.point.x, transformed.point.y
- 
+    #     now = self.get_clock().now()
+    #     elapsed = (now - self.last_face_detection_time).nanoseconds / 1e9
+    #     if elapsed < FACE_STALE_SEC:
+    #         return
+
+    #     self.one_face_positions.clear()
     # ── Deduplication ──────────────────────────────────────────────────────────
     def is_ring_already_seen(self, map_x: float, map_y: float) -> bool:
         """
@@ -576,7 +557,8 @@ class RobotCommander(Node):
             # print("TU SM")
             # print()
 
-        if len(self.one_ring_positions) > 15 and not self.going_to_face:
+        print("Len of one_ring_positions: ", len(self.one_ring_positions))
+        if len(self.one_ring_positions) > 5:
             self.going_to_ring = True
             median_x = np.median([p[0] for p in self.one_ring_positions])
             median_y = np.median([p[1] for p in self.one_ring_positions])
@@ -593,67 +575,25 @@ class RobotCommander(Node):
         return None, None
 
 
-    def  publish_one_seen(self):
-        marker_array = MarkerArray()
-
-        for i, (fx, fy) in enumerate(self.one_face_positions):
-            # ── sphere at the face position ──────────────────────────────────
-            sphere = Marker()
-            sphere.header.frame_id = "map"
-            sphere.header.stamp = self.get_clock().now().to_msg()
-            sphere.ns = "seen_faces"
-            sphere.id = i * 2          # even ids → spheres
-            sphere.type = Marker.SPHERE
-            sphere.action = Marker.ADD
-            sphere.pose.position.x = fx
-            sphere.pose.position.y = fy
-            sphere.pose.position.z = 0.3        # raise slightly above ground
-            sphere.pose.orientation.w = 1.0
-            sphere.scale.x = 0.25
-            sphere.scale.y = 0.25
-            sphere.scale.z = 0.25
-            sphere.color.r = 1.0
-            sphere.color.g = 0.3
-            sphere.color.b = 0.0
-            sphere.color.a = 1.0
-            sphere.lifetime.sec = 0             # 0 → marker lives forever
-            marker_array.markers.append(sphere)
-
-            # ── text label above the sphere ──────────────────────────────────
-            label = Marker()
-            label.header.frame_id = "map"
-            label.header.stamp = sphere.header.stamp
-            label.ns = "seen_faces_labels"
-            label.id = i * 2 + 1       # odd ids → labels
-            label.type = Marker.TEXT_VIEW_FACING
-            label.action = Marker.ADD
-            label.pose.position.x = fx
-            label.pose.position.y = fy
-            label.pose.position.z = 0.65
-            label.pose.orientation.w = 1.0
-            label.scale.z = 0.18        # text height in metres
-            label.color.r = 1.0
-            label.color.g = 1.0
-            label.color.b = 1.0
-            label.color.a = 1.0
-            label.text = f"Face #{i + 1}"
-            label.lifetime.sec = 0
-            marker_array.markers.append(label)
-        self.one_publish.publish(marker_array)
-
     def _register_face(self, map_x: float, map_y: float):
         """Record a face location so we never visit it again."""
         #self.seen_faces.append((map_x, map_y))
         if not self.going_to_face:
+            print("publishing one seen face")
             self.one_face_positions.append((map_x, map_y))
-            self.publish_one_seen()
 
-        if len(self.one_face_positions) > 25 and not self.going_to_ring:
+        print("Len of one_face_positions: ", len(self.one_face_positions))
+        if len(self.one_face_positions) > 4:# and not self.going_to_ring:
             self.going_to_face = True
+
+            # extract the median
             median_x = np.median([p[0] for p in self.one_face_positions])
             median_y = np.median([p[1] for p in self.one_face_positions])
+
             self.seen_faces.append((median_x, median_y))
+
             self.one_face_positions.clear()
+
             self.info(
 
                 f"Registered face #{len(self.seen_faces)} at map "
@@ -695,6 +635,8 @@ class RobotCommander(Node):
         goal_pose.pose.orientation = self.YawToQuaternion(yaw_to_face)
 
         return self.goToPose(goal_pose)    
+    
+
 def make_pose(rc, x, y, qz, qw):
     pose = PoseStamped()
     pose.header.frame_id = "map"
@@ -703,18 +645,40 @@ def make_pose(rc, x, y, qz, qw):
     pose.pose.position.y = y
     pose.pose.orientation = Quaternion(x=0.0, y=0.0, z=qz, w=qw)
     return pose
+
+
+
 def main(args=None):
-    positions = [
-    #(-0.1507724543037919, -0.23072254256144112, 0.010314225539944995, 0.9999468069610059),
+
+    positions_face = [
+    # (-0.1507724543037919, -0.23072254256144112, 0.010314225539944995, 0.9999468069610059),
     (-0.9198282301753373, -0.10762984551283342, 0.8100609432123049, 0.5863456900856276),
-    (-1.5866502778489406, 0.7317233527968411, -0.5793155795278797, 0.8151033427218152),
-    (-2.2618125454904896, -0.06564286960134255, 0.958429748974962, 0.28532861104311164),
-    (-3.1314396350047202, 0.4414679464953455, -0.6794658614896312, 0.7337071234969396),
+    (-1.2291618971446194, 0.4536097111997317, 0.785008383819208, 0.6194851389125933),
+    (-2.201596999496148, 0.13783018797053642, -0.6424733824069875, 0.7663080013274851),
+    (-2.718368929651697, 0.14815897557146263, 0.9906295114898875, 0.13657661207288277),
     (-3.2835393036433405, -0.10195187443663478, 0.5270695181045316, 0.8498221714482723),
-    (-3.716156298638488, -0.20608935460419006, -0.9949289061152515, 0.10058067297601933),
+    #(-3.1314396350047202, 0.4414679464953455, 0.9519693034976104, 0.30619347674023756),
+    #(-3.716156298638488, -0.20608935460419006, -0.9949289061152515, 0.10058067297601933),
+    ]
+
+    # positions =  [
+    #     (-0.3617589765824157, -0.1501166124041269, 0.9972565486774657, 0.07402280810607977),
+    #     (-0.12947325539476676, 0.3120262472696123, 0.7417944066863466, 0.6706273616613411),
+    #     (-0.9623037996679877, -0.093967036104127, -0.2797555418285046, 0.960071266529855), 
+    #     (-0.3617589765824157, -0.1501166124041269, 0.9972565486774657, 0.07402280810607977)
+    # ]
+
+    positions_ring = [
+    (-1.1960090785979713, 0.696284769562094, -0.7025040445836127, 0.7116797505505307),
+    (-1.0122222393943552, 0.1651003392900611, 0.7191735700381287, 0.694830465767451),
+    (-3.1448283952319676, 0.07683171714505631, 0.5786822913923401, 0.8155530673284914),
+    (-2.9966289479131216, 0.16628469419453254, -0.703319738788994, 0.7108736491316732),
+    (-3.9604760981429408, -0.22789600383404476, -0.9983043058310701, 0.05821093504785283),
     ]
     rclpy.init(args=args)
+
     rc = RobotCommander()
+
     # Wait until Nav2 and Localizer are available
     rc.waitUntilNav2Active()
 
@@ -725,89 +689,117 @@ def main(args=None):
         print("robot is undocked")
     print("Not docked", rc.is_docked)
     
+    positions = (
+        [(x, y, qz, qw, "face") for (x, y, qz, qw) in positions_face]
+        + [(x, y, qz, qw, "ring") for (x, y, qz, qw) in positions_ring]
+    )
+
     interupted = False
     count_faces = 0
     count_rings = 0
+    mode = "face"
+
+
 
     print("starting execution")
     while count_faces < 3 or count_rings < 2:
-        for (x, y, qz, qw) in positions:
+        for (x, y, qz, qw, kind) in positions:
+            if kind not in ("face", "ring"):
+                continue
+            if mode != kind:
+                continue
             goal_pose = make_pose(rc, x, y, qz, qw)
             rc.goToPose(goal_pose)
             print("Going to waypoint: ", x, y)
 
             while not rc.isTaskComplete():
                 rclpy.spin_once(rc, timeout_sec=0.1)
+                # print("WHile 2")
+                rc.mode_pub.publish(String(data=mode))
+                if rc._pending_ring is not None and mode == "ring":
+                    ring_x, ring_y = rc._pending_ring
+                    rc._pending_ring = None
 
-            #     if rc._pending_ring is not None:
-            #         ring_x, ring_y = rc._pending_ring
-            #         rc._pending_ring = None
+                    rc._interrupted_waypoint = (x, y, qz, qw)
+                    rc.cancelTask()
+                    rc.navigate_to_face(ring_x, ring_y)
 
-            #         rc._interrupted_waypoint = (x, y, qz, qw)
-            #         rc.cancelTask()
-            #         rc.navigate_to_face(ring_x, ring_y)
+                    while not rc.isTaskComplete():
+                        rclpy.spin_once(rc, timeout_sec=0.1)
+                    rc.info("MADE IT TO RING")
+                    temp = None
+                    maxCount = -1
+                    print("CLASSIFIED COLORS: ", rc.classified_colors)
+                    for color, count in rc.classified_colors.items():
+                        if count > maxCount:
+                            maxCount = count
+                            temp = color
+                    if temp is not None:
+                        rc.info(f"Most likely color is {temp} with {maxCount} classifications.")
+                        speak_msg = String()
+                        speak_msg.data = f"I see a {temp} ring."
+                        rc.speak_pub.publish(speak_msg)
+                        for color, count in rc.classified_colors.items():
+                            rc.classified_colors[color] = 0
 
-            #         while not rc.isTaskComplete():
-            #             rclpy.spin_once(rc, timeout_sec=0.1)
-            #         count_rings += 1
-            #         rc.info("MADE IT TO RING")
-            #         temp = None
-            #         maxCount = -1
-            #         print("CLASSIFIED COLORS: ", rc.classified_colors)
-            #         for color, count in rc.classified_colors.items():
-            #             if count > maxCount:
-            #                 maxCount = count
-            #                 temp = color
-            #         if temp is not None:
-            #             rc.info(f"Most likely color is {temp} with {maxCount} classifications.")
-            #             speak_msg = String()
-            #             speak_msg.data = f"I see a {temp} ring."
-            #             rc.speak_pub.publish(speak_msg)
-            #         #rc.seen_rings.append((ring_x, ring_y))
-            #         for color, count in rc.classified_colors.items():
-            #             rc.classified_colors[color] = 0
-            #         sleep_duration = 0.3
-            #         rc.info(f"Robot staying in place for {sleep_duration} seconds...")
-            #         time.sleep(sleep_duration)
-            #         rc.info("Ring visit done, resuming waypoint...")
-                
-            #         interupted = True
+                    count_rings += 1
+                    #rc.seen_rings.append((ring_x, ring_y))
+                    sleep_duration = 0.3
+                    rc.info(f"Robot staying in place for {sleep_duration} seconds...")
+                    time.sleep(sleep_duration)
+                    rc.info("Ring visit done, resuming waypoint...")
+                    rc.going_to_ring = False
+                    interupted = True
 
 
-            #     if rc._pending_face is not None:
-            #         face_x, face_y = rc._pending_face
-            #         rc._pending_face = None
 
-            #         rc._interrupted_waypoint = (x, y, qz, qw)
-            #         rc.cancelTask()
-            #         rc.navigate_to_face(face_x, face_y)
+                if rc._pending_face is not None and mode == "face":
+                    face_x, face_y = rc._pending_face
+                    rc._pending_face = None # clear the pending face to avoid re-triggering
 
-            #         while not rc.isTaskComplete():
-            #             rclpy.spin_once(rc, timeout_sec=0.1)
-            #         rc.info("MADE IT TO FACE")
-            #         rc.speak_pub.publish(String(data="Hello, human!"))
-            #         sleep_duration = 0.4
-            #         rc.info(f"Robot staying in place for {sleep_duration} seconds...")
-            #         time.sleep(sleep_duration)
-            #         rc.info("Face visit done, resuming waypoint...")
-            #         count_faces += 1
-            #         interupted = True
-            #     if count_faces >= 3 and count_rings >= 2:
-            #         break
+                    rc._interrupted_waypoint = (x, y, qz, qw) # save the current waypoint so we can resume it after visiting the face
+                    rc.cancelTask() # cancel the current navigation goal to interrupt it and go to the face; we will resume the waypoint later in the main loop
+                    print("Navigating to face at: ", face_x, face_y)
+                    rc.navigate_to_face(face_x, face_y) # go to detected face
 
-            #     if interupted:
-            #         ix, iy, iqz, iqw = rc._interrupted_waypoint
-            #         rc._interrupted_waypoint = None
-            #         goal_pose = make_pose(rc, ix, iy, iqz, iqw)
-            #         rc.goToPose(goal_pose)
+                    while not rc.isTaskComplete(): # wait until we reach the face before doing anything else (like checking for new faces or rings or resuming the waypoint)
+                        rclpy.spin_once(rc, timeout_sec=0.1)
+                    rc.info("MADE IT TO FACE")
 
-            #         interupted = False
+                    # Speak to the face and wait a bit before resuming the waypoint
+                    rc.speak_pub.publish(String(data="Hello, human!"))
+                    sleep_duration = 0.4
+                    rc.info(f"Robot staying in place for {sleep_duration} seconds...")
+                    time.sleep(sleep_duration)
+                    rc.info("Face visit done, resuming waypoint...")
+
+                    # count the number of faces we already visited
+                    count_faces += 1
+                    interupted = True # set to resume the waypoint we interrupted to go to face 
+
+                # if we saw enough faces and rings, we can stop the execution early without going through all the waypoints    
+                if count_faces >= 3 and mode == "face":
+                    mode = "ring"
+                    break
+                if count_rings >= 2 and mode == "ring":
+                    break
+                # continue waypoint navigation
+                if interupted:
+                    ix, iy, iqz, iqw = rc._interrupted_waypoint
+                    rc._interrupted_waypoint = None
+                    goal_pose = make_pose(rc, ix, iy, iqz, iqw)
+                    rc.goToPose(goal_pose)
+                    interupted = False
 
             result = rc.getResult()
             rc.info(f"Waypoint result: {result}")
-            if count_faces >= 3 and count_rings >= 2:
+            if count_faces >= 3 and mode == "face":
+                mode = "ring"
+            if mode == "ring" and count_rings >= 2:
                 break
-
+    speak_msg = String()
+    speak_msg.data = f"I HAVE COMPLETED THE TASK!"
+    rc.speak_pub.publish(speak_msg)
     rc.destroyNode()
     # And a simple example
 if __name__=="__main__":

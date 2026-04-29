@@ -36,6 +36,8 @@ install(DIRECTORY
 install(PROGRAMS
   scripts/detect_rings.py
   scripts/detect_people.py
+  scripts/detect_rings2.py
+  scripts/detect_people2.py
   scripts/robot_commander2.py
   DESTINATION lib/${PROJECT_NAME})
 

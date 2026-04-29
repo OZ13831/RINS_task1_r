@@ -485,6 +485,8 @@
 /home/gamma/colcon_ws/install/dis_tutorial3/share/dis_tutorial3//worlds/task2_yellow_demo_meshes/yellow.jpg
 /home/gamma/colcon_ws/install/dis_tutorial3/share/dis_tutorial3//maps/map1.pgm
 /home/gamma/colcon_ws/install/dis_tutorial3/share/dis_tutorial3//maps/map1.yaml
+/home/gamma/colcon_ws/install/dis_tutorial3/share/dis_tutorial3//maps/task2.pgm
+/home/gamma/colcon_ws/install/dis_tutorial3/share/dis_tutorial3//maps/task2.yaml
 /home/gamma/colcon_ws/install/dis_tutorial3/share/dis_tutorial3//urdf/lite/turtlebot4.urdf.xacro
 /home/gamma/colcon_ws/install/dis_tutorial3/share/dis_tutorial3//urdf/sensors/camera_bracket.urdf.xacro
 /home/gamma/colcon_ws/install/dis_tutorial3/share/dis_tutorial3//urdf/sensors/oakd.urdf.xacro

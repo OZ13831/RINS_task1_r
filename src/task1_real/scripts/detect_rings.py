@@ -1,12 +1,12 @@
 #!/usr/bin/python3
 
-import time
 import os
 import rclpy
 from rclpy.node import Node
 import cv2
 import numpy as np
 from sensor_msgs.msg import Image, CameraInfo
+from nav_msgs.msg import OccupancyGrid
 
 from std_msgs.msg import String
 from cv_bridge import CvBridge, CvBridgeError
@@ -112,32 +112,33 @@ class RingDetector(Node):
             namespace='',
             parameters=[
                 ('upper_ratio', 0.5),
+                ('map_topic', '/map'),
+                ('map_bounds_padding', 0.25),
+                ('map_bounds_hard', False),
                 ('target_frame', 'map'),
             ],
         )
 
-        # Basic ROS stuff
-        timer_frequency = 5
-        timer_period = 1/timer_frequency
-
-        # ellipse thresholds
-        self.ecc_thr = 100
-        self.ratio_thr = 1.5
-        self.center_thr = 10
-        self.upper_ratio = 0.4
+        self.upper_ratio = self.get_parameter('upper_ratio').get_parameter_value().double_value
+        self.map_topic = self.get_parameter('map_topic').get_parameter_value().string_value
+        self.map_bounds_padding = self.get_parameter('map_bounds_padding').get_parameter_value().double_value
+        self.map_bounds_hard = self.get_parameter('map_bounds_hard').get_parameter_value().bool_value
         self.target_frame = self.get_parameter('target_frame').get_parameter_value().string_value
         # An object we use for converting images between ROS format and OpenCV format
         self.bridge = CvBridge()
-        self.rings = None
         self.circles = None
         self.depth_image = None
         self.depth_header = None
-        self.depth_scale = None
 
         self.fx = None
         self.fy = None
         self.cx = None
         self.cy = None
+
+        self.map_min_x = None
+        self.map_max_x = None
+        self.map_min_y = None
+        self.map_max_y = None
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -146,12 +147,12 @@ class RingDetector(Node):
         self.image_sub = self.create_subscription(Image, "/gemini/color/image_raw", self.image_callback, qos_profile_sensor_data)
         self.depth_sub = self.create_subscription(Image, "/gemini/depth/image_raw", self.depth_callback, qos_profile_sensor_data)
         self.depth_info_sub = self.create_subscription(CameraInfo, "/gemini/depth/camera_info", self.depth_info_callback, qos_profile_sensor_data)
+        self.map_sub = self.create_subscription(OccupancyGrid, self.map_topic, self.map_callback, qos_profile_sensor_data)
         
 
         self.color_pub = self.create_publisher(String, "/ring_color", qos_profile_sensor_data)
         self.ring_pub = self.create_publisher(MarkerArray, "/rings", qos_profile)
         self.ring_xy_pub = self.create_publisher(Marker, "/ring_xy_marker", qos_profile)
-        self.predicted_color_pub = self.create_publisher(String, "/ring_predicted_color", qos_profile_sensor_data)
 
         cv2.namedWindow("detected_circles", cv2.WINDOW_NORMAL)
         cv2.resizeWindow("detected_circles", 960, 540)
@@ -160,16 +161,42 @@ class RingDetector(Node):
         #cv2.namedWindow("Detected contours", cv2.WINDOW_NORMAL)
         # cv2.namedWindow("Detected rings", cv2.WINDOW_NORMAL)
 
+        self.get_logger().info(f"Waiting for map on {self.map_topic} to enable map bounds checking.")
+
+    def map_callback(self, data):
+        # Cache map boundaries for quick inside-map checks.
+        if data.info.width == 0 or data.info.height == 0 or data.info.resolution <= 0.0:
+            return
+
+        origin_x = float(data.info.origin.position.x)
+        origin_y = float(data.info.origin.position.y)
+        width_m = float(data.info.width) * float(data.info.resolution)
+        height_m = float(data.info.height) * float(data.info.resolution)
+
+        self.map_min_x = origin_x
+        self.map_max_x = origin_x + width_m
+        self.map_min_y = origin_y
+        self.map_max_y = origin_y + height_m
+
+    def _is_inside_map(self, x, y):
+        # Skip filtering when map bounds are not ready.
+        if None in (self.map_min_x, self.map_max_x, self.map_min_y, self.map_max_y):
+            return True
+
+        padding = max(0.0, float(self.map_bounds_padding))
+        return (
+            (self.map_min_x - padding) <= x <= (self.map_max_x + padding)
+            and (self.map_min_y - padding) <= y <= (self.map_max_y + padding)
+        )
+
     def depth_callback(self, data):
         try:
             if data.encoding == '16UC1':
                 depth_raw = self.bridge.imgmsg_to_cv2(data, desired_encoding='passthrough')
                 self.depth_image = depth_raw.astype(np.float32) / 1000.0
-                self.depth_scale = 0.001
             else:
                 depth_raw = self.bridge.imgmsg_to_cv2(data, desired_encoding='passthrough')
                 self.depth_image = depth_raw.astype(np.float32)
-                self.depth_scale = 1.0
 
             self.depth_header = data.header
         except CvBridgeError as ex:
@@ -253,9 +280,9 @@ class RingDetector(Node):
     def publish_ring_markers(self, ring_points_map, stamp):
         marker_array = MarkerArray()
 
-        clear_marker = Marker()
-        clear_marker.action = Marker.DELETEALL
-        marker_array.markers.append(clear_marker)
+        # clear_marker = Marker()
+        # clear_marker.action = Marker.DELETEALL
+        # marker_array.markers.append(clear_marker)
 
         for idx, pt in enumerate(ring_points_map):
             marker = Marker()
@@ -278,7 +305,9 @@ class RingDetector(Node):
             marker.color.b = 0.0
             marker.lifetime = RosDuration(sec=0, nanosec=600000000)
             marker_array.markers.append(marker)
+        
 
+        print("Publishing ring markers:", len(marker_array.markers))
         self.ring_pub.publish(marker_array)
 
     def publish_ring_xy_marker(self, ring_points_map, stamp):
@@ -411,6 +440,16 @@ class RingDetector(Node):
                 except Exception:
                     continue
 
+                if not self._is_inside_map(ring_point_map.point.x, ring_point_map.point.y):
+                    if self.map_bounds_hard:
+                        self.get_logger().debug(
+                            "Ring outside map bounds, skipping marker."
+                        )
+                        continue
+                    self.get_logger().debug(
+                        "Ring outside map bounds, keeping marker due to soft mode."
+                    )
+
                 ring_points_map.append((
                     ring_point_map.point.x,
                     ring_point_map.point.y,
@@ -424,7 +463,6 @@ class RingDetector(Node):
         predicted_color = predict_color(display_image, ring_mask)
         if predicted_color:
             self.color_pub.publish(String(data=predicted_color))
-            self.predicted_color_pub.publish(String(data=predicted_color))
 
 
         cv2.imshow("detected_circles", display_image)
