@@ -387,6 +387,7 @@ set(CMAKE_MAKEFILE_DEPENDS
   "/opt/ros/jazzy/share/rclcpp_components/cmake/rclcpp_components-extras.cmake"
   "/opt/ros/jazzy/share/rclcpp_components/cmake/rclcpp_componentsConfig-version.cmake"
   "/opt/ros/jazzy/share/rclcpp_components/cmake/rclcpp_componentsConfig.cmake"
+  "/opt/ros/jazzy/share/rclcpp_components/cmake/rclcpp_components_package_hook.cmake"
   "/opt/ros/jazzy/share/rclcpp_components/cmake/rclcpp_components_register_node.cmake"
   "/opt/ros/jazzy/share/rclcpp_components/cmake/rclcpp_components_register_nodes.cmake"
   "/opt/ros/jazzy/share/rclpy/cmake/rclpyConfig-version.cmake"

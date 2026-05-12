@@ -1,5 +1,6 @@
 /home/gamma/colcon_ws/install/dis_tutorial7/share/dis_tutorial7//launch/control.launch.py
 /home/gamma/colcon_ws/install/dis_tutorial7/share/dis_tutorial7//launch/create3_nodes.launch.py
+/home/gamma/colcon_ws/install/dis_tutorial7/share/dis_tutorial7//launch/line_follower.launch.py
 /home/gamma/colcon_ws/install/dis_tutorial7/share/dis_tutorial7//launch/robot_description.launch.py
 /home/gamma/colcon_ws/install/dis_tutorial7/share/dis_tutorial7//launch/ros_gz_bridge.launch.py
 /home/gamma/colcon_ws/install/dis_tutorial7/share/dis_tutorial7//launch/sim_turtlebot_nav.launch.py
@@ -34,6 +35,9 @@
 /home/gamma/colcon_ws/install/dis_tutorial7/share/dis_tutorial7//config/arm_controller_position.yaml
 /home/gamma/colcon_ws/install/dis_tutorial7/share/dis_tutorial7//config/control.yaml
 /home/gamma/colcon_ws/install/dis_tutorial7/lib/dis_tutorial7/arm_mover_actions.py
+/home/gamma/colcon_ws/install/dis_tutorial7/lib/dis_tutorial7/capture_oakd_image.py
+/home/gamma/colcon_ws/install/dis_tutorial7/lib/dis_tutorial7/face_classification_publisher.py
+/home/gamma/colcon_ws/install/dis_tutorial7/lib/dis_tutorial7/line_follower.py
 /home/gamma/colcon_ws/install/dis_tutorial7/share/ament_index/resource_index/package_run_dependencies/dis_tutorial7
 /home/gamma/colcon_ws/install/dis_tutorial7/share/ament_index/resource_index/parent_prefix_path/dis_tutorial7
 /home/gamma/colcon_ws/install/dis_tutorial7/share/dis_tutorial7/environment/ament_prefix_path.sh
