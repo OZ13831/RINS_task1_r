@@ -318,8 +318,11 @@ message(STATUS "Execute custom install script")
 # install(DIRECTORY "launch" "meshes" "urdf" "config" "DESTINATION" "share/dis_tutorial7/")
 ament_cmake_symlink_install_directory("/home/gamma/colcon_ws/src/dis_tutorial7" DIRECTORY "launch" "meshes" "urdf" "config" "DESTINATION" "share/dis_tutorial7/")
 
-# install(PROGRAMS "scripts/arm_mover_actions.py" "scripts/capture_oakd_image.py" "scripts/face_classification_publisher.py" "scripts/line_follower.py" "DESTINATION" "lib/dis_tutorial7")
-ament_cmake_symlink_install_programs("/home/gamma/colcon_ws/src/dis_tutorial7" PROGRAMS "scripts/arm_mover_actions.py" "scripts/capture_oakd_image.py" "scripts/face_classification_publisher.py" "scripts/line_follower.py" "DESTINATION" "lib/dis_tutorial7")
+# install("TARGETS" "cylinder_segmentation" "DESTINATION" "lib/dis_tutorial7")
+include("/home/gamma/colcon_ws/build/dis_tutorial7/ament_cmake_symlink_install_targets_0_${CMAKE_INSTALL_CONFIG_NAME}.cmake")
+
+# install(PROGRAMS "scripts/arm_mover_actions.py" "scripts/capture_oakd_image.py" "scripts/face_classification_publisher.py" "scripts/line_follower.py" "scripts/detect_rings.py" "DESTINATION" "lib/dis_tutorial7")
+ament_cmake_symlink_install_programs("/home/gamma/colcon_ws/src/dis_tutorial7" PROGRAMS "scripts/arm_mover_actions.py" "scripts/capture_oakd_image.py" "scripts/face_classification_publisher.py" "scripts/line_follower.py" "scripts/detect_rings.py" "DESTINATION" "lib/dis_tutorial7")
 
 # install(FILES "/home/gamma/colcon_ws/build/dis_tutorial7/ament_cmake_index/share/ament_index/resource_index/package_run_dependencies/dis_tutorial7" "DESTINATION" "share/ament_index/resource_index/package_run_dependencies")
 ament_cmake_symlink_install_files("/home/gamma/colcon_ws/src/dis_tutorial7" FILES "/home/gamma/colcon_ws/build/dis_tutorial7/ament_cmake_index/share/ament_index/resource_index/package_run_dependencies/dis_tutorial7" "DESTINATION" "share/ament_index/resource_index/package_run_dependencies")

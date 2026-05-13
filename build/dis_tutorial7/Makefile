@@ -197,6 +197,43 @@ dis_tutorial7_uninstall/fast:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/dis_tutorial7_uninstall.dir/build.make CMakeFiles/dis_tutorial7_uninstall.dir/build
 .PHONY : dis_tutorial7_uninstall/fast
 
+#=============================================================================
+# Target rules for targets named cylinder_segmentation
+
+# Build rule for target.
+cylinder_segmentation: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 cylinder_segmentation
+.PHONY : cylinder_segmentation
+
+# fast build rule for target.
+cylinder_segmentation/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cylinder_segmentation.dir/build.make CMakeFiles/cylinder_segmentation.dir/build
+.PHONY : cylinder_segmentation/fast
+
+src/cylinder_segmentation.o: src/cylinder_segmentation.cpp.o
+.PHONY : src/cylinder_segmentation.o
+
+# target to build an object file
+src/cylinder_segmentation.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cylinder_segmentation.dir/build.make CMakeFiles/cylinder_segmentation.dir/src/cylinder_segmentation.cpp.o
+.PHONY : src/cylinder_segmentation.cpp.o
+
+src/cylinder_segmentation.i: src/cylinder_segmentation.cpp.i
+.PHONY : src/cylinder_segmentation.i
+
+# target to preprocess a source file
+src/cylinder_segmentation.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cylinder_segmentation.dir/build.make CMakeFiles/cylinder_segmentation.dir/src/cylinder_segmentation.cpp.i
+.PHONY : src/cylinder_segmentation.cpp.i
+
+src/cylinder_segmentation.s: src/cylinder_segmentation.cpp.s
+.PHONY : src/cylinder_segmentation.s
+
+# target to generate assembly for a file
+src/cylinder_segmentation.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cylinder_segmentation.dir/build.make CMakeFiles/cylinder_segmentation.dir/src/cylinder_segmentation.cpp.s
+.PHONY : src/cylinder_segmentation.cpp.s
+
 # Help Target
 help:
 	@echo "The following are some of the valid targets for this Makefile:"
@@ -212,6 +249,10 @@ help:
 	@echo "... test"
 	@echo "... dis_tutorial7_uninstall"
 	@echo "... uninstall"
+	@echo "... cylinder_segmentation"
+	@echo "... src/cylinder_segmentation.o"
+	@echo "... src/cylinder_segmentation.i"
+	@echo "... src/cylinder_segmentation.s"
 .PHONY : help
 
 
